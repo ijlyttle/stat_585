@@ -1,0 +1,21 @@
+# Stat 585X: Week 1
+
+Ian Lyttle
+
+```{r prelim}
+library(knitr)
+library(plyr)
+library(reshape2)
+
+options(width = 100, str = strOptions(vec.len = 2))
+
+opts_chunk$set(
+  comment = NA, 
+  tidy = FALSE, 
+  fig.align = "center", 
+  fig.width = 10, 
+  fig.height = 6,
+  dev = "png"
+)
+```
+

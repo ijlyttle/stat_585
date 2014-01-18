@@ -2,6 +2,12 @@
 
 ```{r prelim}
 library(knitr)
+library(ggplot2)
+library(plyr)
+library(reshape2)
+library(stringr)
+library(lubridate)
+library(maps)
 
 options(width = 100, str = strOptions(vec.len = 2))
 
@@ -29,3 +35,186 @@ url <- "http://api.census.gov/data/2010/sf1?key=%s&get=P0010001,NAME&for=state:*
 popstate <- read.census(sprintf(url, getkey()))
 head(popstate)
 ```
+
+## SAS
+
+```{r}
+library(foreign)
+
+fname <- file.path("..", "..", "data", "DEMO_F.XPT")
+
+demo <- read.xport(fname)
+
+data_small <- summarize(
+  demo,
+  age = RIDAGEEX,
+  gender = mapvalues(as.factor(RIAGENDR), from = c(1, 2), to = c("male", "female"))
+)
+
+summary(data_small)
+
+ggplot(data_small) + geom_boxplot(aes(x = gender, y = age)) + labs(y = "age (months)")
+```
+
+## USHCN
+
+First, let's parse the stations' data.
+
+```{r}
+fname <- file.path("..", "..", "data", "ushcn-stations.txt")
+#file.exists(fname)
+
+stations <- read.fwf(
+  file = fname,
+  widths = c(6, 9, 10, -7, 3, 31, -7, -7, -7, -3),
+  col.names = c("id", "lat", "long", "state", "name"),
+  strip.white = TRUE
+)
+
+head(stations)
+summary(stations)
+```
+
+So, there are three Miami's. Next, let's look at the station data for Iowa.
+
+```{r}
+fname <- file.path("..", "..", "data", "state13_IA.txt")
+#file.exists(fname)
+
+wx_data <- read.fwf(
+  file = fname,
+  widths = c(6, 4, 2, 4, rep(c(5, -1, -1, -1), times = 31)),
+  col.names = c("id", "year", "month", "measurement", 
+                str_join(rep("day_", 31) ,seq(1, 31))),
+  strip.white = TRUE
+)
+
+summary(wx_data)
+```
+
+It seems we should melt the days and cast the measurements. 
+
+```{r}
+wx_data_melt <- melt(
+  data = wx_data,
+  id.vars = c("id", "year", "month", "measurement"),
+  variable.name = "char_day"
+)
+
+summary(wx_data_melt)
+```
+
+Before casting, let's deal with the NA values properly.
+
+```{r}
+wx_data_melt$value[wx_data_melt$value == -9999] <- NA
+```
+
+Now, let's cast.
+
+```{r}
+wx_data_cast <- dcast(
+  data = wx_data_melt,
+  formula = id + year + month + char_day ~ measurement,
+  value.var = "value"
+)
+
+summary(wx_data_cast)
+```
+
+We can make proper dates (although, if we wanted to skip right to the station low, we don't need this):
+
+```{r}
+fn_make_date <- function(year, month, char_day){
+  
+  str_date <- str_join(
+    as.character(year),
+    as.character(month),
+    str_replace(char_day, pattern = "day_", replacement = ""),
+    sep = "-"
+  )
+  
+  ymd(str_date) # lubridate will catch the "silly" dates and parse to NA
+    
+}
+
+wx_data_tidy <- summarize(
+  wx_data_cast,
+  id,
+  date = suppressWarnings(fn_make_date(year, month, char_day)),
+  prcp = PRCP,
+  snow = SNOW,
+  snwd = SNWD,
+  tmax = TMAX,
+  tmin = TMIN
+)
+
+# get rid of NA date
+wx_data_tidy <- wx_data_tidy[!is.na(wx_data_tidy$date), ]
+
+summary(wx_data_tidy)
+```
+
+Some of those temperatures look suspicious
+
+```{r}
+qplot(x = tmin, data = wx_data_tidy)
+
+head(arrange(wx_data_tidy, tmin) )
+```
+
+I'm going to go out on a limb and discard the -45 on 1953-03-21, and the -91 on 1916-12-16.
+
+```{r}
+wx_data_tidy$tmin[wx_data_tidy$tmin < -41] <- NA
+
+summary(wx_data_tidy)
+qplot(x = tmin, data = wx_data_tidy)
+```
+
+Now, let's get the min for each station
+
+```{r}
+wx_tmin <- ddply(
+  .data = wx_data_tidy,
+  .variables = .(id),
+  .fun = summarize,
+  tmin_hist = min(tmin, na.rm = TRUE),
+  date = max(date[tmin == tmin_hist], na.rm = TRUE)
+)
+
+wx_tmin
+```
+
+This all looks plausible. Now, let's join in the station data.
+
+```{r}
+wx_tmin_station <- join(wx_tmin, stations, by = "id")
+
+wx_tmin_station
+```
+
+It remains to map the data.
+
+```{r}
+iowa_map_data <- map_data('state', region = c("iowa"))
+
+ggplot(wx_tmin_station, mapping = aes(x = long, y = lat)) +
+  geom_text(mapping = aes(label = tmin_hist), color = "blue") + 
+geom_polygon(data = iowa_map_data, alpha = 0.5)
+```
+
+Finally!
+  
+  
+## NETCDF 
+
+```{r}
+library(ncdf)
+
+fo <- open.ncdf("../../data/sweden.temp.01-10.nc")
+sweden.temp <- get.var.ncdf(fo, "tasol")
+dim(sweden.temp)
+```
+
+##
